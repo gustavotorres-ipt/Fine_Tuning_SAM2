@@ -1,0 +1,10 @@
+parihaka_slices
+*.pth
+*.pt
+facies
+inputs/*
+labels/*
+2d_data
+3d_data
+seismic_data
+depth_slices
