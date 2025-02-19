@@ -6,22 +6,24 @@ import cv2 # type: ignore
 import os
 import matplotlib.pyplot as plt
 import pycocotools
-import matplotlib.pyplot as plt
 from pycocotools.coco import COCO # por algum motivo precisa dar import nisso
 from tqdm import tqdm
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from matplotlib.patches import Rectangle
 
-
 N_IMAGES_TRAINING = 1000
 N_IMAGES_VAL = 100
-N_EPOCHS = 100
+N_EPOCHS = 70
 BATCH_SIZE = 4
 
 IMGS_BASE_DIR = "imagens_parihaka"
 INPUTS_DIR = f"./{IMGS_BASE_DIR}/seismic"
 LABELS_DIR = f"./{IMGS_BASE_DIR}/annotations"
+
+BASE_MODEL_CONFIG = ("sam2.1_hiera_small.pt", "sam2.1_hiera_s.yaml")
+CHECKPOINT_NAME = "seismic_model_small.pth"
+
 
 def show_image(image, points, is_mask=False):
     fig, ax = plt.subplots()
@@ -40,8 +42,17 @@ def show_image(image, points, is_mask=False):
     plt.show()
 
 
-def add_color_channels(image):
-    return np.stack([image, image, image], axis=2)
+def logscaler(x, a):
+    x = x.copy()
+    x[x>0] = a * np.log(1 + x[x>0]/a)
+    x[x<0] = - a * np.log(1 - x[x<0]/a)
+    return x
+
+
+def normalize_and_add_color_channels(image):
+    # image = logscaler(image, 128)
+    image = 255 * (image - image.min()) / (image.max() - image.min())
+    return np.stack([image, image, image], axis=2).astype(np.uint8)
 
 
 def decode_segmentation_mask(segm_entry):
@@ -57,7 +68,7 @@ def read_from_image(data, idx_image):
     ent  = data[idx_image] # choose random entry
 
     if ".json" in ent["annotation"]:
-        image = add_color_channels(np.load(ent["image"])).astype(np.uint8)
+        image = normalize_and_add_color_channels(np.load(ent["image"]))
         ann_map = decode_segmentation_mask(ent['segmentation'])
         bbox = [int(coord) for coord in ent['bbox']]
     else:
@@ -85,6 +96,7 @@ def read_from_image(data, idx_image):
 
     inds_mask = np.argwhere(ann_map > 0)
     masks = np.array(ann_map)
+
 
     pontos_aleatorios = [inds_mask[np.random.randint(inds_mask.shape[0])]
                          for _ in range(N_PONTOS_POSITIVOS)][0]
@@ -115,10 +127,18 @@ def run_training(predictor, training_data, validation_data):
     optimizer = torch.optim.AdamW(params=predictor.model.parameters(),
                                 lr=1e-5, weight_decay=4e-5)
     scaler = torch.cuda.amp.GradScaler() # set mixed precision
+    
+    mean_loss_values_train = []
+    mean_loss_values_val = []
+
+    mean_iou_values_train = []
+    mean_iou_values_val = []
 
     for epoch in range(N_EPOCHS):
-        mean_iou = 0
+        mean_iou_train = 0
         iou_values = []
+        loss_values = []
+
         # images_data = all_data[:N_IMAGES_TRAINING]
         training_images = training_data
 
@@ -126,9 +146,10 @@ def run_training(predictor, training_data, validation_data):
 
         for itr in tqdm(range(len(training_data) // BATCH_SIZE)):
             with torch.cuda.amp.autocast(): # cast to mix precision
-                loss, iou, _, _ = run_sam2_iter(predictor, training_images)
+                loss, iou, _, _, _ = run_sam2_iter(predictor, training_images)
 
                 iou_values.append(iou)
+                loss_values.append(loss)
 
                 # apply back propogation
                 predictor.model.zero_grad() # empty gradient
@@ -139,16 +160,26 @@ def run_training(predictor, training_data, validation_data):
             training_images = training_images[BATCH_SIZE:]
 
         iou_stacked = torch.stack(iou_values, dim=0)
-        mean_iou = np.mean(iou_stacked.cpu().detach().numpy())
+        mean_iou_train = float(np.mean(iou_stacked.cpu().detach().numpy()))
+
+        loss_stacked = torch.stack(loss_values, dim=0)
+        mean_loss_train = float(np.mean(loss_stacked.cpu().detach().numpy()))
+
+        mean_loss_values_train.append(mean_loss_train)
+        mean_iou_values_train.append(mean_iou_train)
 
         if (epoch + 1) % 10 == 0 : 
-            name_output = f"checkpoints/seismic_model_{epoch+1}.pth"
+            name_output = f"checkpoints/{BASE_MODEL_CONFIG[0][:-3]}_seismic_{epoch+1}_epochs.pth"
             torch.save(predictor.model.state_dict(), name_output)
             print(name_output, "saved successfully.")
 
-        print(f"Epoch {epoch+1} - Training Accuracy (IOU) = ", mean_iou)
+        print(f"Epoch {epoch+1} - Training Accuracy (IOU) = ", mean_iou_train)
 
-        run_validation(predictor, validation_data)
+        mean_loss_val, mean_iou_val = run_validation(predictor, validation_data)
+        mean_loss_values_val.append(mean_loss_val)
+        mean_iou_values_val.append(mean_iou_val)
+ 
+    return mean_loss_values_train, mean_loss_values_val, mean_iou_values_train, mean_iou_values_val
 
 
 def run_sam2_iter(predictor, training_images):
@@ -199,35 +230,46 @@ def run_sam2_iter(predictor, training_images):
     score_loss = torch.abs(prd_scores[:, 0] - iou).mean()
     loss = seg_loss + score_loss*0.05  # mix losses
 
-    return loss, iou, prd_mask, gt_mask
+    return loss, iou, prd_mask, gt_mask, image_batch
 
-
-def plot_masks(gt_mask, pred_mask):
-    f, axarr = plt.subplots(2, BATCH_SIZE)
+def plot_masks(image, gt_mask, pred_mask):
+    #f, axarr = plt.subplots(2, BATCH_SIZE)
+    f, axarr = plt.subplots(1, 2)
 
     for i in range(BATCH_SIZE):
-        axarr[0, i].imshow(pred_mask[i], cmap="copper")
-        axarr[1, i].imshow(gt_mask[i], cmap="copper")
+        segm = 255 * gt_mask[i].astype('uint8')
+        segm = cv2.cvtColor(segm, cv2.COLOR_GRAY2BGR)
+        blend_gt = cv2.addWeighted(segm, 0.2, image[i], 0.8, 0.0)
 
-        axarr[0, i].axis('off')
-        axarr[1, i].axis('off')
+        segm = 255 * pred_mask[i].astype('uint8')
+        segm = cv2.cvtColor(segm, cv2.COLOR_GRAY2BGR)
+        blend_pred = cv2.addWeighted(segm, 0.2, image[i], 0.8, 0.0)
 
-        axarr[0, i].set_title("Predicted Mask")
-        axarr[1, i].set_title('Ground Truth')
-    plt.show()
+        axarr[0].imshow(blend_pred)
+        axarr[1].imshow(blend_gt)
+
+        axarr[0].axis("off")
+        axarr[1].axis('off')
+
+        axarr[0].set_title("Predicted Mask")
+        axarr[1].set_title('Ground Truth')
+        
+        plt.show()
 
 
 def run_validation(predictor, validation_data, n_batches_to_plot=0):
     iou_values = []
+    loss_values = []
 
     validation_size = len(validation_data)
 
     for itr in tqdm(range(validation_size // BATCH_SIZE)):
 
         with torch.cuda.amp.autocast(): # cast to mix precision
-            loss, iou, prd_mask, gt_mask = run_sam2_iter(predictor, validation_data)
+            loss, iou, prd_mask, gt_mask, image_batch = run_sam2_iter(predictor, validation_data)
 
             iou_values.append(iou)
+            loss_values.append(loss)
 
         validation_data = validation_data[BATCH_SIZE:]
 
@@ -237,11 +279,14 @@ def run_validation(predictor, validation_data, n_batches_to_plot=0):
             gt_mask_plot = gt_mask.cpu().detach().numpy()
 
             # for b in range(BATCH_SIZE):
-            #     show_image(masks[b], input_points.cpu().detach().numpy()[b], is_mask=True)
-            #     show_image(preds_to_plot[b], input_points.cpu().detach().numpy()[b], is_mask=True)
+            #     show_image(gt_mask_plot, input_points.cpu().detach().numpy()[b], is_mask=True)
+            #     show_image(pred_mask_plot, input_points.cpu().detach().numpy()[b], is_mask=True)
 
-            plot_masks(gt_mask_plot, pred_mask_plot)
+            plot_masks(image_batch, gt_mask_plot, pred_mask_plot)
             print(iou_values[-1])
+
+    loss_stacked = torch.stack(loss_values, dim=0)
+    mean_loss = np.mean(loss_stacked.cpu().detach().numpy())
 
     # Calcula IOU médio
     iou_stacked = torch.stack(iou_values, dim=0)
@@ -249,56 +294,76 @@ def run_validation(predictor, validation_data, n_batches_to_plot=0):
 
     print("Validation Accuracy (IOU) = ", mean_iou)
     # Mostrar imagens
+    return float(mean_loss), float(mean_iou)
 
 
 all_data=[] # list of files in dataset
 
-for _, nome_arquivo in enumerate(os.listdir(INPUTS_DIR)):  # go over all folder annotation
-    path_imagem = f"{INPUTS_DIR}/{nome_arquivo}"
+def get_training_val_data():
+    for _, nome_arquivo in enumerate(os.listdir(INPUTS_DIR)):  # go over all folder annotation
+        path_imagem = f"{INPUTS_DIR}/{nome_arquivo}"
 
-    if "parihaka" in INPUTS_DIR :
-        nome_label = f'{".".join(nome_arquivo.split(".")[:-1])}.json'
-    else:
-        nome_label = nome_arquivo
-    path_label  = f"{LABELS_DIR}/{nome_label}"
+        if "parihaka" in INPUTS_DIR :
+            nome_label = f'{".".join(nome_arquivo.split(".")[:-1])}.json'
+        else:
+            nome_label = nome_arquivo
+        path_label  = f"{LABELS_DIR}/{nome_label}"
 
-    if ".json" in path_label:
-        # Lê o arquivo json e conta a quantidade de máscaras
-        annotations_imagem = json.load(open(path_label))
+        if ".json" in path_label:
+            # Lê o arquivo json e conta a quantidade de máscaras
+            annotations_imagem = json.load(open(path_label))
 
-        for annotation_info in annotations_imagem:
-            all_data.append(
-                {"image": path_imagem, "annotation": path_label,
-                 "bbox": annotation_info["bbox"],
-                 "segmentation": annotation_info["segmentation"]}
-            )
-    else:
-        all_data.append({"image": path_imagem, "annotation": path_label})
+            for annotation_info in annotations_imagem:
+                all_data.append(
+                    {"image": path_imagem, "annotation": path_label,
+                    "bbox": annotation_info["bbox"],
+                    "segmentation": annotation_info["segmentation"]}
+                )
+        else:
+            all_data.append({"image": path_imagem, "annotation": path_label})
 
-parent = os.path.dirname(os.getcwd())
+    # At least 20 images are used for validation
+    max_training_images = int(0.9 * len(all_data)) \
+        if N_IMAGES_TRAINING > (len(all_data) - 20) else N_IMAGES_TRAINING
 
-sam2_checkpoint = os.path.join("checkpoints", "sam2.1_hiera_tiny.pt") # path to model weight
-model_cfg = os.path.join("configs", "sam2.1", "sam2.1_hiera_t.yaml") # model config
+    random.seed(42)
+    random.shuffle(all_data)
 
-sam2_model = build_sam2(model_cfg, sam2_checkpoint, device="cuda") # load model
-predictor = SAM2ImagePredictor(sam2_model) # load net
+    training_data = all_data[:max_training_images]
+    validation_data = all_data[max_training_images :
+                               (max_training_images + N_IMAGES_VAL)]
+    
+    return training_data, validation_data
 
-predictor.model.sam_mask_decoder.train(True) # enable training of mask decoder 
-predictor.model.sam_prompt_encoder.train(True) # enable training of prompt encoder
 
-os.makedirs("checkpoints", exist_ok=True)
+def main():
+    sam2_checkpoint = os.path.join("checkpoints", BASE_MODEL_CONFIG[0]) # path to model weight
+    model_cfg = os.path.join("configs", "sam2.1", BASE_MODEL_CONFIG[1]) # model config
 
-# At least 20 images are used for validation
-max_training_images = int(0.9 * len(all_data)) \
-    if N_IMAGES_TRAINING > (len(all_data) - 20) else N_IMAGES_TRAINING
+    sam2_model = build_sam2(model_cfg, sam2_checkpoint, device="cuda") # load model
+    predictor = SAM2ImagePredictor(sam2_model) # load net
 
-random.shuffle(all_data)
+    predictor.model.sam_mask_decoder.train(True) # enable training of mask decoder 
+    predictor.model.sam_prompt_encoder.train(True) # enable training of prompt encoder
 
-training_data = all_data[:max_training_images]
-validation_data = all_data[max_training_images :
-                           (max_training_images + N_IMAGES_VAL)]
+    os.makedirs("checkpoints", exist_ok=True)
 
-run_training(predictor, training_data, validation_data)
+    training_data, validation_data = get_training_val_data()
 
-# predictor.model.load_state_dict(torch.load("./checkpoints/best_model.pth"))
-# run_validation(predictor, validation_data, n_batches_to_plot=20)
+    loss_training, loss_validation, iou_training, iou_validation = run_training(
+        predictor, training_data, validation_data)
+
+    training_info = {
+        "loss_train": loss_training,        
+        "loss_val": loss_validation,
+        "iou_train": iou_training,
+        "iou_val": iou_validation,
+    }
+    output_file = f"resultados_{BASE_MODEL_CONFIG[0][:-3]}_seismic.json"
+
+    with open(output_file, "w") as f:
+        json.dump(training_info, f, indent=4)
+        print(output_file, "salvo com sucesso.")
+
+if __name__ == "__main__":
+    main()
