@@ -369,8 +369,8 @@ def get_training_val_data():
     max_training_images = int(0.9 * len(all_data)) \
         if N_IMAGES_TRAINING > (len(all_data) - 20) else N_IMAGES_TRAINING
 
-    #random.seed(42)
-    #random.shuffle(all_data)
+    random.seed(42)
+    random.shuffle(all_data)
 
     training_data = all_data[:max_training_images]
     validation_data = all_data[max_training_images :
