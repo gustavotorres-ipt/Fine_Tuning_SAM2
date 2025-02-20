@@ -1,15 +1,12 @@
 import os
-import random
 import torch
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
-from fine_tune_model_batch import BASE_MODEL_CONFIG, N_IMAGES_TRAINING, N_IMAGES_VAL
 from fine_tune_model_batch import run_validation, get_training_val_data
-from PIL import Image
-import matplotlib.pyplot as plt
 
 
-CHECKPOINT_NAME = "seismic_model_tiny.pth"
+BASE_MODEL_CONFIG = ("sam2.1_hiera_base_plus.pt", "sam2.1_hiera_b+.yaml")
+CHECKPOINT_NAME = "sam2.1_hiera_base_plus_seismic_100_epochs.pth"
 
 
 def main():
@@ -25,12 +22,8 @@ def main():
     _, validation_data = get_training_val_data()
 
     predictor.model.load_state_dict(torch.load(f"./checkpoints/{CHECKPOINT_NAME}"))
-    run_validation(predictor, validation_data, n_batches_to_plot=20)
+    run_validation(predictor, validation_data, n_batches_to_plot=25)
 
 
 if __name__ == "__main__":
-    #img_path = "imagens_parihaka/annotation_vis/iline_slice0402_vis15.jpg"
-    #image = Image.open(img_path)
-    #plt.imshow(image, cmap="copper")
-    #plt.show()
     main()
