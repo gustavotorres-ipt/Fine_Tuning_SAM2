@@ -23,7 +23,7 @@ INPUTS_DIR = f"./{IMGS_BASE_DIR}/seismic"
 LABELS_DIR = f"./{IMGS_BASE_DIR}/annotations"
 
 FIRST_EPOCH = 0
-BASE_MODEL_CONFIG = ("sam2.1_hiera_tiny.pt", "sam2.1_hiera_t.yaml")
+BASE_MODEL_CONFIG = ("sam2.1_hiera_small.pt", "sam2.1_hiera_s.yaml")
 # CHECKPOINT_NAME = "sam2.1_hiera_small_seismic_100_epochs.pth"
 
 
