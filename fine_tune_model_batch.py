@@ -23,7 +23,12 @@ INPUTS_DIR = f"./{IMGS_BASE_DIR}/seismic"
 LABELS_DIR = f"./{IMGS_BASE_DIR}/annotations"
 
 FIRST_EPOCH = 0
-BASE_MODEL_CONFIG = ("sam2.1_hiera_small.pt", "sam2.1_hiera_s.yaml")
+POSSIBLE_CONFIGS = {"tiny": ("sam2.1_hiera_tiny.pt", "sam2.1_hiera_t.yaml"), # 33 min
+                    "small": ("sam2.1_hiera_small.pt", "sam2.1_hiera_s.yaml"), # 37 min
+                    "base_plus": ("sam2.1_hiera_base_plus.pt", "sam2.1_hiera_b+.yaml"), # 50 min
+                    "large": ("sam2.1_hiera_large.pt", "sam2.1_hiera_l.yaml")} # 1h38 min
+
+BASE_MODEL_CONFIG = POSSIBLE_CONFIGS["tiny"]
 # CHECKPOINT_NAME = "sam2.1_hiera_small_seismic_100_epochs.pth"
 
 

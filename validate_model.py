@@ -4,9 +4,13 @@ from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from fine_tune_model_batch import run_validation, get_training_val_data
 
+POSSIBLE_CONFIGS = {"tiny": ("sam2.1_hiera_tiny.pt", "sam2.1_hiera_t.yaml"),
+                    "small": ("sam2.1_hiera_small.pt", "sam2.1_hiera_s.yaml"),
+                    "base_plus": ("sam2.1_hiera_base_plus.pt", "sam2.1_hiera_b+.yaml"),
+                    "large": ("sam2.1_hiera_large.pt", "sam2.1_hiera_l.yaml")}
 
-BASE_MODEL_CONFIG = ("sam2.1_hiera_base_plus.pt", "sam2.1_hiera_b+.yaml")
-CHECKPOINT_NAME = "sam2.1_hiera_base_plus_seismic_100_epochs.pth"
+BASE_MODEL_CONFIG = POSSIBLE_CONFIGS["large"]
+CHECKPOINT_NAME = f"{BASE_MODEL_CONFIG[0][:-3]}_seismic_120_epochs.pth"
 
 
 def main():
@@ -21,7 +25,7 @@ def main():
 
     _, validation_data = get_training_val_data()
 
-    predictor.model.load_state_dict(torch.load(f"./checkpoints/{CHECKPOINT_NAME}"))
+    # predictor.model.load_state_dict(torch.load(f"./checkpoints/{CHECKPOINT_NAME}"))
     run_validation(predictor, validation_data, n_batches_to_plot=25)
 
 
