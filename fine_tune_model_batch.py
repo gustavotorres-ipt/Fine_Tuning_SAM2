@@ -256,6 +256,8 @@ def run_training(predictor, training_data, validation_data):
 
     mean_iou_values_train = []
     mean_iou_values_val = []
+    mean_loss, mean_iou = run_validation(predictor, validation_data) 
+    breakpoint()
 
     for epoch in range(FIRST_EPOCH, FIRST_EPOCH + N_EPOCHS):
         mean_iou_train = 0
